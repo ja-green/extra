@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+req_color="${1}"
+
+tohex() {
+  printf "#%02X%02X%02X" "${1}" "${2}" "${3}"
+}
+
+r=$(printf $((RANDOM % 256)))
+g=$(printf $((RANDOM % 256)))
+b=$(printf $((RANDOM % 256)))
+
+r=$(printf $(((r + 255) / 2)))
+g=$(printf $(((g + 255) / 2)))
+b=$(printf $(((b + 255) / 2)))
+
+[[ "${req_color}" =~ ^[0-9a-fA-F]{6}$ ]] \
+  && req_color="#${req_color}"
+
+[ -z "${req_color}" ] \
+  && bg_color="$(tohex ${r} ${g} ${b})" \
+  || bg_color="${req_color}"
+
+# convert -size 3840x2160 canvas:"${bg_color}" /tmp/bg.png
+# nitrogen --set-scaled /tmp/bg.png
+
+xsetroot -solid "${bg_color}" 2>/dev/null

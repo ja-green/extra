@@ -1,0 +1,265 @@
+#!/usr/bin/env sh
+
+# Copyright (C) 2020 Jack Green (ja-green)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+# xivy
+# modular status line generator
+#
+# this file is intended to be fully POSIX compliant
+# and should be fully functional in the following shells:
+# - bash
+# - sh
+# - zsh (with emulate sh)
+#
+# some external binaries are required in order to extract certain
+# information but every attempt has been made to sue builtin shell
+# functionality where possible
+#
+# the required binaries are:
+# - awk
+# - cat
+# - curl
+# - df
+# - free
+# - ip
+# - iwgetid
+# - pacman
+# - top
+# - wc
+
+version_text="xivy v0.0.1"
+usage_text="usage: xivy [option] [module]"
+
+die() {
+    printf "fatal: %b\n" "${@}"
+
+    exit 1
+}
+
+# network {{{
+
+mod_ssid() {
+    iwgetid -r || echo none
+}
+
+mod_iface() {
+    if test -z "${xivy_iface}" && test -z "${xivy_iface_fallback}"; then
+        return
+    fi
+
+    if ip link show "${xivy_iface}" &>/dev/null; then
+        echo "${xivy_iface}"
+
+    elif ip link show "${xivy_iface_fallback}" &>/dev/null; then
+        echo "${xivy_iface_fallback}"
+    fi
+}
+
+mod_ip() {
+    if test -z "${xivy_iface}" && test -z "${xivy_iface_fallback}"; then
+        return
+    fi
+
+    if ip link show "${xivy_iface}" &>/dev/null; then
+        ip -f inet addr show "${xivy_iface}" | awk '/inet / { print $2 }'
+
+    elif ip link show "${xivy_iface_fallback}" &>/dev/null; then
+        ip -f inet addr show "${xivy_iface_fallback}" | awk '/inet / { print $2 }'
+    fi
+}
+
+mod_public_ip() {
+    curl checkip.amazonaws.com
+}
+
+# }}}
+
+# swap {{{
+
+mod_swap_available() {
+    free -m | awk 'NR==3{ print $2 }'
+}
+
+mod_swap_used() {
+    free -m | awk 'NR==3{ print $3 }'
+}
+
+mod_swap_used_percent() {
+    free -m | awk 'NR==3{ printf "%.2f%%", $3*100/$2 }'
+}
+
+# }}}
+
+# memory {{{
+
+mod_memory_available() {
+    free -m | awk 'NR==2{ print $2 }'
+}
+
+mod_memory_used() {
+    free -m | awk 'NR==2{ print $3 }'
+}
+
+mod_memory_used_percent() {
+    free -m | awk 'NR==2{ printf "%.2f%%", $3*100/$2 }'
+}
+
+# }}}
+
+# disk {{{
+
+mod_disk_device() {
+    df -h | awk '$NF=="/"{ print $1 }'
+}
+
+mod_disk_available() {
+    df -h | awk '$NF=="/"{ print $2 }'
+}
+
+mod_disk_used() {
+    df -h | awk '$NF=="/"{ print $3 }'
+}
+
+mod_disk_used_percent() {
+    df -h | awk '$NF=="/"{ print $5 }'
+}
+
+mod_disk_mountpoint() {
+    df -h | awk '$NF=="/"{ print $6 }'
+}
+
+# }}}
+
+# cpu {{{
+
+mod_cpu_load() {
+    cat /proc/loadavg | awk '{ print $2 }'
+}
+
+mod_cpu_usage() {
+    top -b -n2 -p 1 \
+        | fgrep "Cpu(s)" \
+        | tail -1 \
+        | awk -F'id,' -v prefix="$prefix" \
+        '{ split($1, vs, ","); v=vs[length(vs)]; sub("%", "", v); printf "%s%.1f%%\n", prefix, 100 - v }'
+}
+
+# }}}
+
+# battery {{{
+
+mod_battery_icon() {
+    local lvl=$(cat /sys/class/power_supply/BAT0/capacity)
+
+    if test "$(cat /sys/class/power_supply/BAT0/status)" != "Discharging"; then
+        printf "\uf583 ${lvl}%%"
+
+    elif test ${lvl} -le 100 && test ${lvl} -gt 95; then
+        printf "\uf578 ${lvl}%%"
+    elif test ${lvl} -le 95  && test ${lvl} -gt 85; then
+        printf "\uf581 ${lvl}%%"
+    elif test ${lvl} -le 85  && test ${lvl} -gt 75; then
+        printf "\uf580 ${lvl}%%"
+    elif test ${lvl} -le 75  && test ${lvl} -gt 65; then
+        printf "\uf57f ${lvl}%%"
+    elif test ${lvl} -le 65  && test ${lvl} -gt 55; then
+        printf "\uf57e ${lvl}%%"
+    elif test ${lvl} -le 55  && test ${lvl} -gt 45; then
+        printf "\uf57d ${lvl}%%"
+    elif test ${lvl} -le 45  && test ${lvl} -gt 35; then
+        printf "\uf57c ${lvl}%%"
+    elif test ${lvl} -le 35  && test ${lvl} -gt 25; then
+        printf "\uf57b ${lvl}%%"
+    elif test ${lvl} -le 25  && test ${lvl} -gt 15; then
+        printf "\uf57a ${lvl}%%"
+    else
+        printf "\uf579 ${lvl}%%"
+    fi
+
+}
+
+mod_battery_level() {
+    echo $(cat /sys/class/power_supply/BAT0/capacity)%
+}
+
+mod_battery_status() {
+    cat /sys/class/power_supply/BAT0/status
+}
+
+# }}}
+
+# pacman {{{
+
+mod_pacman_upgrades() {
+    pacman -Qu | wc -l
+}
+
+mod_pacman_packages() {
+    pacman -Qe | wc -l
+}
+
+# }}}
+
+# core {{{
+
+mod_date() {
+    date ${xivy_dateformat}
+}
+
+mod_hostname() {
+    echo ${HOSTNAME}
+}
+
+# }}}
+
+main() {
+    local mod argv argc=${#}
+
+    while test -n "${1}"; do
+        case "${1}" in
+        --) shift; break ;;
+        -*) case "${1}" in
+        -v|--version) opt_version=1 ;;
+        -h|--help)    opt_help=1 ;;
+        -*) die "unknown option '${1}'"
+        esac ;;
+
+        *) test -z "${mod}" && mod="${1}" ;;
+
+        esac
+        shift
+    done
+
+    if test "${opt_version}" = "1"; then
+        echo "${version_text}"
+    elif test "${opt_help}" = "1" || test -z "${mod}"; then
+        echo "${usage_text}"
+
+    else
+        if declare -F "mod_${mod//-/_}" &>/dev/null; then
+            printf "%s%s%s\n"        \
+                "${xivy_prefix}"     \
+                "$(mod_${mod//-/_})" \
+                "${xivy_postfix}"
+        else
+            die "unknown module '${mod}'"
+        fi
+    fi
+}
+
+main ${@}
+
+exit 0
