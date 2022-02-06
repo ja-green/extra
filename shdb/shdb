@@ -1,0 +1,382 @@
+#!/usr/bin/env sh
+
+# this file is part of shdb.
+# <https://github.com/ja-green/shdb>
+#
+# shdb is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# shdb is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with shdb. If not, see <https://www.gnu.org/licenses/>.
+
+# shdb
+# TODO write file description
+#
+# this file is intended to be fully POSIX compliant and should
+# be fully functional in the following shells:
+# - ash
+# - ksh
+# - sh
+# - bash
+# - zsh (with emulate sh)
+#
+# the only required dependencies are the following GNU coreutils binaries:
+# - rm
+# - cat
+# - mkdir
+
+# global variables
+SHDB_NAME="shdb"
+SHDB_VERSION="0.0.1"
+SHDB_EXIT=0
+SHDB_SOURCED=0
+SHDB_TMPDIR="${TMPDIR:-/tmp/}/${SHDB_NAME}.${$}"
+
+SHDB_COL_RD='\033[0;31m'
+SHDB_COL_GN='\033[0;32m'
+SHDB_COL_BL='\033[0;34m'
+SHDB_COL_RS='\033[0m'
+
+SHDB_HISTFILE="${SHDB_TMPDIR}/.history"
+SHDB_HIST=""
+SHDB_HISTIDX=0
+SHDB_HISTSEL=0
+
+SHDB_DBG_LINENO=0
+SHDB_DBG_LINECNT=0
+
+SHDB_DBG_HEADER="\
+shopt -s extdebug
+. ${PWD}/${0}
+trap __shdb_dbg_trap $((LINENO-3)) ${FUNCNAME} DEBUG"
+
+SHDB_LICENSE="copyright (c) 2020 Jack Green (jagreen)"
+SHDB_MAIN_USAGE="usage: <cmd>[arg]; ...
+| ${SHDB_COL_BL}f[?]      ${SHDB_COL_RS}  load and print file info for debuggging
+| ${SHDB_COL_BL}q[?][code]${SHDB_COL_RS}  quit ${SHDB_NAME} with an exit code
+| ${SHDB_COL_BL}?[?][arg] ${SHDB_COL_RS}  help information, documentation, version information
+| ${SHDB_COL_BL}![?][cmd] ${SHDB_COL_RS}  run specified command in sh(1)
+| ${SHDB_COL_BL}=[?][expr]${SHDB_COL_RS}  evaluate mathematical expression\n"
+
+if test -d "${SHDB_TMPDIR}"; then :; else
+    mkdir "${SHDB_TMPDIR}"
+fi
+
+# signal traps
+
+trap __shdb_cleanup EXIT
+
+# auxilliary functions
+
+__shdb_cleanup() {
+    rm -rf "${SHDB_TMPDIR}"
+}
+
+__shdb_die() {
+    printf "fatal: %b\n" "${@}"
+    exit 1
+}
+
+__shdb_trims() {
+    set -f
+    set -- $*
+    printf '%s\n' "$*"
+    set +f
+
+}
+
+__shdb_histread() {
+    local i=0
+
+    if test -f "${SHDB_HISTFILE}"; then
+        while read -r line; do
+            __shdb_histadd "${line}"
+            ((i++))
+        done
+
+        SHDB_HISTIDX="${i}"
+        SHDB_HISTSEL="${i}"
+    fi
+}
+
+__shdb_histwrite() {
+    if test -f "${SHDB_HISTFILE}"; then
+        printf "%s\n" "${SHDB_HIST}" > "${SHDB_HISTFILE}"
+    fi
+}
+
+__shdb_histadd() {
+    if test "x${1}" != "x"; then
+        SHDB_HIST+="${1},"
+        ((SHDB_HISTIDX++))
+        ((SHDB_HISTSEL++))
+    fi
+}
+
+__shdb_histget() {
+    local IFS=',' idx="${1}" item i=0
+
+    if test "${idx}" -ge "${SHDB_HISTIDX}" || test "${idx}" -lt 0; then
+        return
+    fi
+
+    for item in ${SHDB_HIST}
+    do
+        if test "${i}" -eq "${idx}"; then
+            echo "${item}"
+            return
+        fi
+
+        ((i++))
+    done
+}
+
+__shdb_cmd_file() {
+    local fname
+
+    for ((i=1; i<${#1}; i++)); do
+        case "${1:$i:1}" in
+        l) local load=1 ;;
+        *) fname+="${2}" ;;
+        esac
+    done
+
+    if test "x${2}" != "x"; then
+        fname+="${2}"
+    fi
+
+    if test "${load}" = "1"; then
+        if test "x${fname}" = "x"; then
+            return
+        elif ! test -e "${fname}"; then
+            printf "file not found: %s" "${fname}"
+            return
+        fi
+
+        SHDB_DBG_FNAME="${fname}"
+        cat "${fname}" > "${SHDB_TMPDIR}/${fname}.save"
+        printf "%s%s" "${SHDB_DBG_HEADER}" "$(cat "${fname}")" \
+            > "${SHDB_TMPDIR}/${fname}"
+        printf "started debugger session for file '${fname}'"
+    fi
+}
+
+__shdb_cmd_expr() {
+    local expr
+
+    for ((i=1; i<${#1}; i++)); do
+        case "${1:$i:1}" in
+        d) local dec=1 ;;
+        *) expr+="${1:$i:1}" ;;
+        esac
+    done
+
+    if test "x${2}" != "x"; then
+        expr+="${2}"
+    fi
+
+    if test "x${expr}" != "x"; then
+        printf "%s\n" "$((${expr}))"
+    fi
+}
+
+__shdb_cmd_help() {
+    for ((i=1; i<${#1}; i++)); do
+        case "${1:$i:1}" in
+        v) echo "${SHDB_NAME} v${SHDB_VERSION}"; return ;;
+        l) echo "${SHDB_LICENSE}"; return ;;
+        m) man ${SHDB_NAME} 2>/dev/null; return ;;
+        esac
+    done
+
+    if test -n "${2}"; then
+        man "${SHDB_NAME}-${2}" 2>/dev/null
+    else
+        printf "${SHDB_MAIN_USAGE}"
+    fi
+}
+
+__shdb_cmd_quit() {
+    local code force
+
+    for ((i=1; i<${#1}; i++)); do
+        case "${1:$i:1}" in
+        !)     force=1 ;;
+        [0-9]) code+="${1:$i:1}" ;;
+        esac
+    done
+
+    if test "x${force}" != "x"; then
+        __shdb_histwrite
+        exit "${code:-0}"
+    else
+        __shdb_histwrite
+        exit "${code:-0}"
+    fi
+}
+
+__shdb_cmd_sys() {
+    local histcmd
+    local syscmd
+
+    for ((i=1; i<${#1}; i++)); do
+        case "${1:$i:1}" in
+        [0-9]) histcmd+="${1:$i:1}" ;;
+            *) syscmd+="${1:$i:1}" ;;
+        esac
+    done
+
+    if test "${1:1:1}" = '!'; then
+        histcmd="$((SHDB_HISTIDX-1))"
+    fi
+
+    if test "x${histcmd}" != "x"; then
+        if test "${histcmd}" -lt 0 \
+        || test "${histcmd}" -ge "${SHDB_HISTIDX}"; then
+            return
+        fi
+
+        histcmd="$(__shdb_histget "${histcmd}")"
+
+        if test "x${histcmd}"; then
+            echo "${histcmd}"
+            __shdb_runcmd ${histcmd}
+        fi
+
+    elif test -n "${syscmd}"; then
+        "$(command -v sh)" -c "${syscmd}"
+
+    else
+        for ((i=0; i<${SHDB_HISTIDX}; i++)); do
+            histcmd="$(__shdb_histget "${i}")"
+
+            if test -n "${histcmd}"; then
+                printf "%-20s # %s\n" "${histcmd}" "${i}"
+            fi
+        done
+    fi
+}
+
+__shdb_runcmd() {
+    local cmd="${1}"
+
+    if test "x${cmd}" != "x"; then
+        case "${cmd:0:1}" in
+        f)  __shdb_cmd_file ${@} ;;
+        q)  __shdb_cmd_quit ${@} ;;
+        \?) __shdb_cmd_help ${@} ;;
+        !)  __shdb_cmd_sys  ${@} ;;
+        =)  __shdb_cmd_expr ${@} ;;
+        esac
+    fi
+}
+
+__shdb_main() {
+    local char cmdop argv argc=${#}
+
+    while test "x${1}" != "x"; do
+        case "${1}" in
+        --) shift; break ;;
+        -*) case "${1}" in
+        -v|--version)  cmdop="?v" ;;
+        -h|--help)     cmdop="?"  ;;
+        -c|--command)  test "x${2}" = "x" && cmdop="${2}" && shift \
+                       || __shdb_die "option ${1} requires an argument" ;;
+        -*)            argv+="${1} "
+        esac ;;
+
+        *) test "x${__shdb_dbgfile}" = "x" && __shdb_dbgfile="${1}" ;;
+
+        esac
+        shift
+    done
+
+    __shdb_histread
+
+    while :; do
+        __shdb_runcmd ${cmdop}
+
+        SHDB_EXIT="${?}"
+        cmdop=""
+
+        printf "[0x%08x]> " "${SHDB_DBG_LINENO}"
+
+        while IFS=$'\n' read -rsn1 char; do
+            if test "${char}" = $'\x1b'; then
+                while IFS=$'\n' read -rsn2 cext; do
+                    char+="${cext}"
+                    break
+                done
+
+                case "${char}" in
+                $'\x1b[A') ((SHDB_HISTSEL--));
+                           histcmd="$(__shdb_histget "${SHDB_HISTSEL}")" ;;
+                $'\x1b[B') ((SHDB_HISTSEL++));
+                           histcmd="$(__shdb_histget "${SHDB_HISTSEL}")" ;;
+                $'\x1b[D') printf '\x1b[D' ;;
+                $'\x1b[C') printf '\x1b[C' ;;
+                *) echo "${char}" ;;
+                esac
+
+                if test "${SHDB_HISTSEL}" -lt 0; then
+                    SHDB_HISTSEL=0
+                elif test "${SHDB_HISTSEL}" -gt "${SHDB_HISTIDX}"; then
+                    SHDB_HISTSEL=${SHDB_HISTIDX}
+                fi
+
+                if test "x${histcmd}" != "x" \
+                || test "${SHDB_HISTSEL}" -eq "${SHDB_HISTIDX}"; then
+                    for ((i=0; i<${#cmdop}; i++))
+                    do
+                        printf "\b \b"
+                    done
+
+                    cmdop="${histcmd}"
+                    printf "%s" "${cmdop}"
+                fi
+            else
+                case "${char}" in
+                  $'\n') printf "\n"; break ;;
+                     '') printf "\n"; break ;;
+                $'\177') if test "x${cmdop}" != "x"; then
+                            printf "\b \b"
+                            cmdop="${cmdop%?}"
+                         fi ;;
+                      *) printf "%s" "${char}"
+                         cmdop+="${char}" ;;
+                esac
+            fi
+        done
+
+        cmdop="$(__shdb_trims "${cmdop}")"
+
+        if test "${cmdop:0:1}" != '!'; then
+            __shdb_histadd "${cmdop}"
+        fi
+    done
+}
+
+# source detection
+# this file is eventually sourced by the debugged script
+# if this file is being sourced, do not call __shdb_main and do not exit
+if test "x${ZSH_EVAL_CONTEXT}" != "x"; then
+    case "${ZSH_EVAL_CONTEXT}" in *:file) SHDB_SOURCED=1;; esac
+elif test "x${BASH_VERSION}" != "x"; then
+    (return 0 2>/dev/null) && SHDB_SOURCED=1
+elif test "x${BASH_SOURCE}" != "x"; then
+    test "${0}" != "${BASH_SOURCE}" && SHDB_SOURCED=1
+else
+    test "${_}" != "${0}" && SHDB_SOURCED=1
+fi
+
+if test "${SHDB_SOURCED}" = "0"; then
+    __shdb_main ${@}
+    exit ${SHDB_EXIT}
+fi
