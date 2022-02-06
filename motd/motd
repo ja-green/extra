@@ -1,17 +1,13 @@
 #!/usr/bin/env sh
 
 COLUMNS="${COLUMNS:-$(tput cols)}"
-quotes="${HOME}/etc/quotes"
-upgrades="$(pacman -Qu | wc -l)"
+quotes="${HOME}/.config/motd/"
 
-case $(((RANDOM%2)+1)) in
+case $(((RANDOM%3)+1)) in
 1) file="${quotes}/marcus-aurelius"; auth="Marcus Aurelius" ;;
 2) file="${quotes}/epictetus";       auth="Epictetus"       ;;
+3) file="${quotes}/seneca";          auth="Seneca"          ;;
 esac
 
 printf "\n\"%s\"\n\n  - %s\n\n" \
     "$(shuf -n 1 ${file} | fold -s -w$((COLUMNS/2)))" "${auth}"
-
-if test "${upgrades}" != "0"; then
-    printf "NOTE: %d upgrades are available\n\n" "${upgrades}"
-fi
