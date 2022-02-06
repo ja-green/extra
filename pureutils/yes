@@ -1,0 +1,45 @@
+#!/bin/bash
+
+usage() {
+  printf "${1}"
+ 
+  exit 0
+}
+
+die() {
+  printf "yes: %s\n%s\n" \
+	 "${1}" "Try 'yes --help' for more information" >&2
+
+  exit 1
+}
+
+yes_usage="\
+Usage: yes [STRING]...
+  or:  yes OPTION
+Repeatedly output a line with all specified STRING(s), or 'y'.
+
+      --help     display this help and exit
+      --version  output version information and exit"
+
+main() {
+  string="${@}"
+
+  while [ -n "${1}" ]; do
+    case "${1}" in
+    --) shift; break;;
+    -*) case "${1}" in
+    --help)     usage "${wc_usage}" ;;
+    -*)         die "invalid option -- '${1:1:1}'" ;;
+    esac ;;
+
+    esac
+    shift
+
+  done
+
+  for((;;)){ printf "%s\n" "${string:-y}"; }
+}
+
+main ${@}
+
+exit 0

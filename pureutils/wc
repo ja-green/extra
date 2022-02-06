@@ -1,0 +1,96 @@
+#!/bin/bash
+
+wc_usage="\
+Usage: wc [OPTION]... [FILE]...
+  or:  wc [OPTION]... --files0-from=F
+Print newline, word, and byte counts for each FILE, and a total line if
+more than one FILE is specified.  A word is a non-zero-length sequence of
+characters delimited by white space.
+
+With no FILE, or when FILE is -, read standard input.
+
+The options below may be used to select which counts are printed, always in
+the following order: newline, word, character, byte, maximum line length.
+  -c, --bytes            print the byte counts
+  -m, --chars            print the character counts
+  -l, --lines            print the newline counts
+      --files0-from=F    read input from the files specified by
+                           NUL-terminated names in file F;
+                           If F is - then read names from standard input
+  -L, --max-line-length  print the maximum display width
+  -w, --words            print the word counts
+      --help     display this help and exit
+      --version  output version information and exit"
+
+count_lines() {
+  local count=0
+
+  while IFS= read -r _; do
+    ((count++))
+  done < "${1}"
+  
+  printf '%s' "${count}"
+}
+
+count_bytes() {
+  local count=0
+
+  while IFS= read -r line; do
+    ((count+=1))
+    ((count+=${#line}))
+  done < "${1}"
+
+  printf '%s' "${count}"
+}
+
+count_words() {
+  local count=0
+
+  while IFS= read -r line; do
+    spc_cnt="${line//[^\ ]}"
+    ((count+=${#spc_cnt}))
+    [ ${#line} -gt 0 ] && ((count++)) # maybe remove this?
+  done < "${1}"
+
+  printf '%s' "${count}"
+}
+
+main() {
+  while [ -n "${1}" ]; do
+    case "${1}" in
+    --) shift; break;;
+    -*) case "${1}" in
+    -l|--lines) func="lines" ;;
+    -c|--bytes) func="bytes" ;;
+    -w|--words) func="words" ;;
+    --help)     usage "${wc_usage}" ;;
+    -*)         die "unknown option '%s'\n" "${1}" ;;
+    esac ;;
+
+    *) files+=("${1}") ;;
+
+    esac
+    shift
+
+  done
+
+  [ -p "/dev/stdin" ] || [[ "${#files[@]}" = "0" ]] || [[ "${files[@]}" = "-" ]] \
+    && files="/dev/stdin"
+
+  [ -z "${func}" ] && func="all"
+
+  for file in ${files[@]}; do
+    count=$(count_${func} ${file}); counts+=("${count}")
+    ((total+=${count}));
+  done
+
+  for ((i=0; i<${#files[@]}; i++)); do
+    printf "%${#total}s %s\n" "${counts[${i}]}" "${files[${i}]}"
+  done
+
+  [ ${#files[@]} -gt 1 ] && printf "%${#total}s total\n" "${total}"
+}
+
+main ${@}
+
+exit 0
