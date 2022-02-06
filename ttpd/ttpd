@@ -1,0 +1,266 @@
+#!/usr/bin/env python
+
+# Copyright (C) 2022 Jack Green (jack@jackgreen.co)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+# file: ttpd.py
+# date: 26/01/2022
+# lang: python3
+
+import argparse
+import crossplane
+import crypt
+import getpass
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+TTPD_NAME = "ttpd"
+NGX_PATH = str(shutil.which("nginx"))
+FCGIWRAP_PATH = str(shutil.which("fcgiwrap"))
+DEFAULT_BIND = "0.0.0.0"
+if os.geteuid() == 0:
+    DEFAULT_PORT = "80"
+else:
+    DEFAULT_PORT = "8000"
+
+ngx_proc = None
+fcgiw_proc = None
+
+tmpd = tempfile.mkdtemp()
+fcgi_socket = "%s/fcgi.sock" % (tmpd)
+ngx_config = [
+    { "directive": "http", "args": [], "block": [
+        { "directive": "log_format", "args": ["std", "$remote_addr - $remote_user [$time_local] \"$request\" $status $body_bytes_sent"] },
+        { "directive": "client_body_temp_path", "args": ["%s" % (tmpd), "1", "2"] },
+        { "directive": "client_max_body_size", "args": ["0"] },
+        { "directive": "client_body_timeout", "args": ["120s"] },
+        { "directive": "server", "args": [], "block": [
+            { "directive": "listen", "args": [] },
+            { "directive": "access_log", "args": ["/dev/stdout", "std"] } ]
+        }]
+    },
+    { "directive": "events", "args": [], "block": [
+        { "directive": "worker_connections", "args": ["1024"] } ]
+    },
+    { "directive": "pid", "args": ["%s/ttpd-nginx.pid" % (tmpd)] },
+    { "directive": "daemon", "args": ["off"] },
+    { "directive": "error_log", "args": ["stderr", "crit"] }
+]
+
+upload_script = """#!/usr/bin/env python
+import cgi
+import os
+
+form = cgi.FieldStorage()
+
+upload_html = \"\"\"
+<form action=\"/\" method=\"post\" enctype=\"multipart/form-data\">
+    <input type=\"file\" name=\"file\">
+    <input type=\"submit\">
+</form>\"\"\"
+
+if not form:
+    print(\"Content-Type: text/html\\r\\n\\r\\n\")
+    print(upload_html)
+
+elif form[\"file\"] != None:
+    item = form[\"file\"]
+
+    if item.file:
+        open(\"%s/%s\" % (os.getenv(\"UPLOAD_DIR\"), os.path.basename(item.filename)), \"wb\").write(item.file.read())
+        data = item.file.read()
+        print(\"Content-Type: text/plain\\r\\n\\r\\nFile uploaded\")"""
+
+def cleanup():
+    if fcgiw_proc != None:
+        fcgiw_proc.terminate()
+    if ngx_proc != None:
+        ngx_proc.terminate()
+
+    shutil.rmtree(tmpd, ignore_errors=True)
+
+def signal_handler(*args):
+    cleanup()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT,  signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+def die(s: str) -> None:
+    print("fatal: %s" % (s), file=sys.stderr)
+    cleanup()
+    sys.exit(1)
+
+def exec_listen(serve_type: str) -> None:
+
+    if serve_type == None:
+        serve_type = "file"
+
+    if serve_type != "file":
+        fcgiw_proc = subprocess.Popen([FCGIWRAP_PATH, "-s", "unix:%s" % (fcgi_socket)])
+
+    print(crossplane.build(ngx_config), file=open("%s/ngx-config" % (tmpd), "w"))
+    print("[%s-%s] listening on %s" % (TTPD_NAME, serve_type, ngx_config[0]["block"][4]["block"][0]["args"][0]))
+
+    ngx_proc = subprocess.call([NGX_PATH, "-c", "%s/ngx-config" % (tmpd)])
+
+def write_config_upload(args: dict) -> None:
+    print(upload_script, file=open("%s/upload" % (tmpd), "w"))
+    os.chmod("%s/upload" % (tmpd), 0o700)
+
+    ngx_config[0]["block"][4]["block"].append(
+        { "directive": "location", "args": ["/"], "block": [
+            { "directive": "return", "args": ["404"] } ]
+        }
+    )
+    ngx_config[0]["block"][4]["block"].append(
+        { "directive": "location", "args": ["=", "/"], "block": [
+            { "directive": "root", "args": ["%s" % (tmpd)] },
+            { "directive": "fastcgi_param", "args": ["UPLOAD_DIR", "%s" % (args["root"])] },
+            { "directive": "include", "args": ["/etc/nginx/fastcgi_params"] },
+            { "directive": "fastcgi_index", "args": ["upload"] },
+            { "directive": "fastcgi_pass", "args": ["unix:%s" % (fcgi_socket)] } ]
+        }
+    )
+
+def write_config_cgi(args: dict) -> None:
+    ngx_config[0]["block"][4]["block"].append(
+        { "directive": "location", "args": ["/"], "block": [
+            { "directive": "root", "args": ["%s" % (args["root"])] },
+            { "directive": "include", "args": ["/etc/nginx/fastcgi_params"] },
+            { "directive": "fastcgi_pass", "args": ["unix:%s" % (fcgi_socket)] } ]
+        }
+    )
+    ngx_config[0]["block"][4]["block"].append(
+        { "directive": "location", "args": ["=", "/"], "block": [
+            { "directive": "root", "args": ["%s/" % (args["root"])] },
+            { "directive": "return", "args": ["200"] } ]
+        }
+    )
+
+def write_config_file(args: dict) -> None:
+    if os.path.isdir(args["root"]):
+        ngx_config[0]["block"][4]["block"].append(
+            { "directive": "location", "args": ["/"], "block": [
+                { "directive": "root", "args": ["%s/" % (args["root"])] },
+                { "directive": "autoindex", "args": ["on"] }, ]
+            }
+        )
+    elif os.path.isfile(args["root"]):
+        ngx_config[0]["block"][4]["block"].append(
+            { "directive": "location", "args": ["/"], "block": [
+                { "directive": "root", "args": ["%s/" % (os.path.dirname(args["root"]))] },
+                { "directive": "index", "args": ["%s" % (os.path.basename(args["root"]))] } ]
+            }
+        )
+
+def write_config_fcgi(args: dict) -> None:
+    if not args["sock"]:
+        die("socket required for type=fcgi")
+
+    ngx_config[0]["block"][4]["block"].append(
+        { "directive": "location", "args": ["/"], "block": [
+            { "directive": "include", "args": ["/etc/nginx/fastcgi_params"] },
+            { "directive": "fastcgi_pass", "args": ["unix:%s" % (args["sock"])] } ]
+        }
+    )
+
+def write_config_text(args: dict) -> None:
+    if not args["text"]:
+        die("text required for type=text")
+
+    ngx_config[0]["block"][4]["block"].append(
+        { "directive": "location", "args": ["/"], "block": [
+            { "directive": "return", "args": ["200", args["text"]] } ]
+        }
+    )
+
+def main():
+    type_map = {
+        "file":   write_config_file,
+        "text":   write_config_text,
+        "upload": write_config_upload,
+        "cgi":    write_config_cgi,
+        "fcgi":   write_config_fcgi
+    }
+
+    parser = argparse.ArgumentParser(allow_abbrev=False, prog=TTPD_NAME)
+    parser.add_argument("-t","--type", help="server type [file,text,upload,cgi,fcgi], default: file", required=False)
+    parser.add_argument("-r","--root", help="root directory to serve from, default: cwd", required=False)
+    parser.add_argument("-b","--bind", help="bind server address, default: 0.0.0.0", required=False)
+    parser.add_argument("-p","--port", help="port to listen on, default: 8000", required=False)
+    parser.add_argument("-T","--text", help="text to send as the response body (type=text only)", required=False)
+    parser.add_argument("-s","--sock", help="fastcgi socket for incoming fcgi requests (type=fcgi only)", required=False)
+    parser.add_argument("-u","--user", help="usernames for HTTP basic auth delimited by commas", required=False)
+    args = vars(parser.parse_args())
+
+    if args["root"]:
+        if not args["root"].startswith("/"):
+            args["root"] = os.path.join(os.getcwd(), args["root"])
+    else:
+        args["root"] = os.getcwd()
+
+    if not os.path.exists(args["root"]):
+        die("no such file or directory '%s'" % (args["root"]))
+
+    if args["user"]:
+        with open("%s/htpasswd" % (tmpd), "w") as f:
+            for user in args["user"].split(","):
+                pprompt = lambda: (getpass.getpass("Password for '%s': " % (user)), getpass.getpass('Retype password: '))
+
+                p1, p2 = pprompt()
+                while p1 != p2:
+                    print('Passwords do not match. Try again')
+                    p1, p2 = pprompt()
+
+                pwhash = crypt.crypt(p1, None)
+                f.write("%s:%s\n" % (user, pwhash))
+
+        ngx_config[0]["block"][4]["block"].append(
+            { "directive": "auth_basic", "args": ["access restricted"] }
+        )
+        ngx_config[0]["block"][4]["block"].append(
+            { "directive": "auth_basic_user_file", "args": ["%s/htpasswd" % (tmpd)] }
+        )
+
+    if args["port"]:
+        if args["bind"]:
+            ngx_config[0]["block"][4]["block"][0]["args"] = ["%s:%s" % (args["bind"], args["port"])]
+        else:
+            ngx_config[0]["block"][4]["block"][0]["args"] = ["%s:%s" % (DEFAULT_BIND, args["port"])]
+    else:
+        if args["bind"]:
+            ngx_config[0]["block"][4]["block"][0]["args"] = ["%s:%s" % (args["bind"], DEFAULT_PORT)]
+        else:
+            ngx_config[0]["block"][4]["block"][0]["args"] = ["%s:%s" % (DEFAULT_BIND, DEFAULT_PORT)]
+
+    if args["type"]:
+        try:
+            type_map[args["type"]](args)
+        except KeyError:
+            die("unknown type '%s'" % (args["type"]))
+    else:
+        write_config_file(args)
+
+    exec_listen(args["type"])
+    cleanup()
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
