@@ -49,6 +49,184 @@ die() {
     exit 1
 }
 
+set_color() {
+    local ctx="${1}"
+
+    if test "${ctx}" = "tmux"; then
+        c_black="#[fg=black]"
+        c_red="#[fg=red]"
+        c_green="#[fg=green]"
+        c_yellow="#[fg=yellow]"
+        c_blue="#[fg=blue]"
+        c_magenta="#[fg=magenta]"
+        c_cyan="#[fg=cyan]"
+        c_white="#[fg=white]"
+        c_default="#[fg=default]"
+
+    elif test "${ctx}" = "ps1-zsh"; then
+        c_black="%{%F{black}%}"
+        c_red="%{%F{red}%}"
+        c_green="%{%F{green}%}"
+        c_yellow="%{%F{yellow}%}"
+        c_blue="%{%F{blue}%}"
+        c_magenta="%{%F{magenta}%}"
+        c_cyan="%{%F{cyan}%}"
+        c_white="%{%F{white}%}"
+        c_default="%{%F{default}%}"
+
+    elif test "${ctx}" = "term"; then
+        c_black="$(tput setaf 0)"
+        c_red="$(tput setaf 1)"
+        c_green="$(tput setaf 2)"
+        c_yellow="$(tput setaf 3)"
+        c_blue="$(tput setaf 4)"
+        c_magenta="$(tput setaf 5)"
+        c_cyan="$(tput setaf 6)"
+        c_white="$(tput setaf 7)"
+        c_default="$(tput sgr0)"
+
+    elif test "${ctx}" = "none"; then
+        c_black=""
+        c_red=""
+        c_green=""
+        c_yellow=""
+        c_blue=""
+        c_magenta=""
+        c_cyan=""
+        c_white=""
+        c_default=""
+
+    else
+        die "unknown color context '${ctx}'"
+    fi
+}
+
+# git {{{
+mod_git_ref() {
+    git symbolic-ref HEAD 2>/dev/null \
+        || git rev-parse --short HEAD
+    }
+
+mod_git_branch() {
+    git symbolic-ref --short HEAD 2>/dev/null
+}
+
+mod_git_remote_branch() {
+    git rev-parse --abbrev-ref @{upstream} 2>/dev/null
+}
+
+mod_git_remote_status() {
+    ahead_behind="$(git rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)"
+    ahead="${ahead_behind%%$'\t'*}"
+    behind="${ahead_behind##*$'\t'}"
+
+    if test "${ahead}" -ne "0" && "${behind}" -ne "0"; then
+        printf "${c_red}!${c_default}"
+    elif test "${ahead}" -ne "0"; then
+        printf "${c_yellow}\u2191${c_default}${ahead}"
+    elif test "${behind}" -ne "0"; then
+        printf "${c_blue}\u2193${c_default}${behind}"
+    else
+        printf "${c_green}=${c_default}"
+    fi
+}
+
+mod_git_remote_status_fetch() {
+    git fetch
+
+    ahead_behind="$(git rev-list --left-right --count HEAD...@{upstream} 2>/dev/null)"
+    ahead="${ahead_behind%%$'\t'*}"
+    behind="${ahead_behind##*$'\t'}"
+
+    if test "${ahead}" -ne "0" && "${behind}" -ne "0"; then
+        printf "${c_red}!${c_default}"
+    elif test "${ahead}" -ne "0"; then
+        printf "${c_yellow}\u2191${c_default}${ahead}"
+    elif test "${behind}" -ne "0"; then
+        printf "${c_blue}\u2193${c_default}${behind}"
+    else
+        printf "${c_green}=${c_default}"
+    fi
+}
+
+mod_git_remote_commit() {
+    git rev-parse @{upstream} 2>/dev/null
+}
+
+mod_git_remote_commit_short() {
+    git rev-parse --short @{upstream} 2>/dev/null
+}
+
+mod_git_commit() {
+    git rev-parse HEAD 2>/dev/null
+}
+
+mod_git_commit_short() {
+    git rev-parse --short HEAD 2>/dev/null
+}
+
+mod_git_status() {
+    git status --porcelain=v1 | (
+        while read line; do
+            case "${line//[[:space:]]/}" in
+                'M'*)  dty="${c_yellow}\u25CF${c_default}"  ; ;;
+                'UU'*) dty="${c_yellow}\u25CF${c_default}"  ; ;;
+                'D'*)  del="${c_red}\u25CF${c_default}"     ; ;;
+                '??'*) unt="${c_blue}\u25CF${c_default}"    ; ;;
+                'A'*)  new="${c_green}\u25CF${c_default}"   ; ;;
+                'C'*)  cpd="${c_cyan}\u25CF${c_default}"    ; ;;
+                'R'*)  rnm="${c_magenta}\u25CF${c_default}" ; ;;
+            esac
+        done
+
+        bits="${dty}${del}${unt}${new}${cpd}${rnm}"
+        [ -n "${bits}" ] && echo -e "${bits}" || echo -e "${c_green}\u2714${c_default}"
+    )
+}
+
+mod_git_state() {
+    local gitdir="$(git rev-parse --absolute-git-dir)" step
+
+    if test -d "${gitdir}/rebase-merge"; then
+        step="$(cat "${gitdir_path}/rebase-merge/msgnum")/$(cat "${gitdir_path}/rebase-merge/end")"
+        echo "rebase(${step})"
+    elif test -d "${gitdir}/rebase-apply"; then
+        step="$(cat "${gitdir_path}/rebase-apply/next")/$(cat "${gitdir_path}/rebase-apply/last")"
+        echo "rebase(${step})"
+
+    elif test -f "${gitdir}/MERGE_HEAD"; then
+        echo "merge"
+    elif test -f "${gitdir}/CHERRY_PICK_HEAD"; then
+        echo "cherrypick"
+    elif test -f "${gitdir}/REVERT_HEAD"; then
+        echo "revert"
+    elif test -f "${gitdir}/BISECT_LOG"; then
+        echo "bisect"
+    else
+        echo "normal"
+    fi
+}
+
+# }}}
+
+# task {{{
+
+mod_task_ctx() {
+    local ctx="$(task rc.verbose: rc.hooks: _get rc.context)"
+
+    if test -n "${ctx}"; then
+        echo "${ctx}"
+    else
+        echo "none"
+    fi
+}
+
+mod_task_next() {
+    task rc.verbose: rc.report.next.columns:description rc.report.next.labels:1 rc.hooks: limit:1 next
+}
+
+# }}}
+
 # network {{{
 
 mod_ssid() {
@@ -145,6 +323,10 @@ mod_disk_mountpoint() {
 
 # cpu {{{
 
+mod_cpu_performance_preference() {
+    cat /sys/devices/system/cpu/cpufreq/policy?/energy_performance_preference
+}
+
 mod_cpu_load() {
     cat /proc/loadavg | awk '{ print $2 }'
 }
@@ -155,7 +337,7 @@ mod_cpu_usage() {
         | tail -1 \
         | awk -F'id,' -v prefix="$prefix" \
         '{ split($1, vs, ","); v=vs[length(vs)]; sub("%", "", v); printf "%s%.1f%%\n", prefix, 100 - v }'
-}
+    }
 
 # }}}
 
@@ -188,7 +370,6 @@ mod_battery_icon() {
     else
         printf "\uf579 ${lvl}%%"
     fi
-
 }
 
 mod_battery_level() {
@@ -203,7 +384,27 @@ mod_battery_status() {
 
 # pacman {{{
 
-mod_pacman_upgrades() {
+mod_pacman_sec_issues() {
+    if test -n "${xivy_pacman_sec_onlyupgradable}"; then
+        local n_issues="$(arch-audit --format='%s' --upgradable | tac | sed -n "/"${xivy_pacman_sec_minseverity:-"high"}"/I,\$p" | wc -l)"
+    else
+        local n_issues="$(arch-audit --format='%s' | tac | sed -n "/"${xivy_pacman_sec_minseverity:-"high"}"/I,\$p" | wc -l)"
+    fi
+
+    if test "${n_issues}" != "0"; then
+        printf "${n_issues}"
+    fi
+}
+
+mod_pacman_remote_updates() {
+    local n_updates="$(checkupdates | wc -l)"
+
+    if test "${n_updates}" != "0"; then
+        printf "${n_updates}"
+    fi
+}
+
+mod_pacman_local_updates() {
     pacman -Qu | wc -l
 }
 
@@ -213,10 +414,46 @@ mod_pacman_packages() {
 
 # }}}
 
+# audio {{{
+
+mod_audio_sink_volume_icon() {
+    #local default_sink="$(pactl list short sinks | sed -e 's,^\([0-9][0-9]*\)[^0-9].*,\1,' | head -n 1)"
+    local default_sink="3"
+    local lvl="$(pactl list sinks | grep '^[[:space:]]Volume:' | head -n $((${default_sink} + 1 )) | tail -n 1 | sed -e 's,.* \([0-9][0-9]*\)%.*,\1,')"
+    local mute="$(pactl list sinks | grep '^[[:space:]]Mute:' | head -n $((${default_sink} + 1 )) | tail -n 1 | sed -e 's,.* \([a-z]*\).*,\1,')"
+    #local lvl="$(pactl list sinks | awk '$1=="Volume:" {print $5}' | cut -d '%' -f1)"
+
+    if test "${mute}" != "no"; then
+        mute_stat=" [m]"
+    fi
+
+    if test ${lvl} -le 100 && test ${lvl} -gt 65; then
+        printf "\ufa7d ${lvl}%%${mute_stat}"
+    elif test ${lvl} -le 65  && test ${lvl} -gt 35; then
+        printf "\ufa7f ${lvl}%%${mute_stat}"
+    else
+        printf "\ufa7e ${lvl}%%${mute_stat}"
+    fi
+}
+
+mod_audio_sink_volume_level() {
+    pactl list sinks | awk '$1=="Volume:" {print $5}'
+}
+
+mod_audio_sink_muted() {
+    if "$(pacmd list-sinks | awk '/muted/ { print $2 }')" == "yes"; then
+        printf "true"
+    else
+        printf "false"
+    fi
+}
+
+# }}}
+
 # core {{{
 
 mod_date() {
-    date ${xivy_dateformat}
+    date "+${xivy_dateformat:-%c}"
 }
 
 mod_hostname() {
@@ -230,18 +467,40 @@ main() {
 
     while test -n "${1}"; do
         case "${1}" in
-        --) shift; break ;;
-        -*) case "${1}" in
-        -v|--version) opt_version=1 ;;
-        -h|--help)    opt_help=1 ;;
-        -*) die "unknown option '${1}'"
-        esac ;;
+            --) shift; break ;;
+            -*) case "${1}" in
+                -v|--version)     opt_version=1 ;;
+                -h|--help)        opt_help=1 ;;
+                --prefix-always)  opt_prefixalways=1 ;;
+                --postfix-always) opt_postfixalways=1 ;;
+                -c|--color)
+                    if test -n "${2}"; then
+                        opt_color="${2}"
+                        shift
+                    else
+                        die "option '${1}' requires an argument"
+                    fi ;;
+                -C)
+                    if test -n "${2}"; then
+                        opt_chdir="${2}"
+                        shift
+                    else
+                        die "option '${1}' requires an argument"
+                    fi ;;
+                -*) die "unknown option '${1}'"
+            esac ;;
 
         *) test -z "${mod}" && mod="${1}" ;;
 
         esac
         shift
     done
+
+    if test -n "${opt_chdir}"; then
+        cd "${opt_chdir}"
+    fi
+
+    set_color "${opt_color:-term}"
 
     if test "${opt_version}" = "1"; then
         echo "${version_text}"
@@ -250,12 +509,24 @@ main() {
 
     else
         if declare -F "mod_${mod//-/_}" &>/dev/null; then
-            printf "%s%s%s\n"        \
-                "${xivy_prefix}"     \
-                "$(mod_${mod//-/_})" \
-                "${xivy_postfix}"
+            local out="$(mod_${mod//-/_})"
+
+            if test -n "${out}" || test "${opt_prefixalways}" = "1"; then
+                local prefix="${xivy_prefix}"
+            fi
+
+            if test -n "${out}" || test "${opt_postfixalways}" = "1"; then
+                local postfix="${xivy_postfix}"
+            fi
+
+            printf "%s%s%s\n" \
+                "$(printf "%b" "${prefix}")" \
+                "${out}" \
+                "$(printf "%b" "${postfix}")"
+
         else
             die "unknown module '${mod}'"
+
         fi
     fi
 }
